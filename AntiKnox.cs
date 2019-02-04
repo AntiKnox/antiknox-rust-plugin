@@ -1,12 +1,16 @@
 using Newtonsoft.Json;
 using UnityEngine.Networking;
+using Oxide.Core;
+using Oxide.Core.Libraries;
+using Oxide.Core.Libraries.Covalence;
+using System.Collections.Generic;
 
 namespace Oxide.Plugins
 {
 
-    [Info("AntiKnox", "AntiKnox", "1.0.0")]
+    [Info("AntiKnoxAntiVPN", "AntiKnox", "1.0.1")]
     [Description("Disallow VPNs from accessing your server.")]
-    class AntiKnox : RustPlugin
+    class AntiKnoxAntiVPN : RustPlugin
     {
 
         private string authKey;
@@ -21,15 +25,25 @@ namespace Oxide.Plugins
 
         void Loaded()
         {
+            loadLanguageConfig();
+        }
+
+        void loadLanguageConfig()
+        {
+            lang.RegisterMessages(new Dictionary<string, string>
+            {
+                {"KickMessage", "AntiKnox: You're not allowed to connect with a VPN or proxy."},
+            }, this);
+        }
+
+        void OnServerInitialized()
+        {
             tryPrintSetupGuide();
         }
 
         protected override void LoadDefaultConfig()
         {
             Config["Key"] = "<PUT YOUR ANTIKNOX KEY HERE>";
-            authKey = null;
-
-            SaveConfig();
         }
 
         private void tryPrintSetupGuide()
@@ -84,7 +98,7 @@ https://www.antiknox.com/dashboard
             }
         }
 
-        object CanClientLogin(Network.Connection connection)
+        void OnUserConnected(IPlayer player)
         {
             // If the auth key is not defined we allow the connection.
             if (authKey == null || authKey.Length != 64)
@@ -96,36 +110,31 @@ https://www.antiknox.com/dashboard
                     printSetupGuide();
                 }
 
-                return true;
+                return;
             }
 
-            var host = connection.ipaddress.Split(':')[0];
-
-            var req = UnityWebRequest.Get("https://api.antiknox.net/lookup/" + host + "?auth=" + authKey);
-            var state = req.SendWebRequest();
-
-            while (!state.isDone)
+            webrequest.Enqueue("https://api.antiknox.net/lookup/" + player.Address + "?auth=" + authKey, null, (code, response) =>
             {
-                ;
-            }
+                handleApiResponse(player, player.Address, code, response);
+            }, this, RequestMethod.GET, null, 10000f);
 
-            if (req.isNetworkError || req.isHttpError)
+            return;
+        }
+
+        private void handleApiResponse(IPlayer player, string host, int code, string response)
+        {
+            if (code != 200 || response == null)
             {
-                Puts(req.error);
+                return;
             }
-            else
+
+            var result = JsonConvert.DeserializeObject<AntiKnoxResult>(response);
+
+            if (result != null && result.match)
             {
-                var responseData = req.downloadHandler.text;
-                var result = JsonConvert.DeserializeObject<AntiKnoxResult>(responseData);
-
-                if (result.match)
-                {
-                    PrintWarning("Disallowing IP " + host + " because it's an anonymous IP address.");
-                    return "AntiKnox: You're not allowed to connect with a VPN or proxy.";
-                }
+                PrintWarning("Disallowing IP " + host + " because it's an anonymous IP address.");
+                player.Kick(lang.GetMessage("KickMessage", this));
             }
-
-            return true;
         }
 
         [ConsoleCommand("antiknox.setkey")]
